@@ -1,0 +1,305 @@
+name: Release macOS arm64
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version like 6.6.4
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    env:
+      CMAKE_GENERATOR: Ninja
+      CMAKE_BUILD_TYPE: Release
+      CMAKE_PREFIX_PATH: /opt/homebrew/opt/ffmpeg@6:/opt/homebrew/opt/openal-soft
+      LIBRARIES_PATH: ${{ github.workspace }}/../Libraries
+      TDE2E_REVISION: 51743dfd01dff6179e2d8f7095729caa4e2222e9
+      TDESKTOP_MAC_BUNDLE_ID: com.mjiadfwaff.Telegram
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Resolve version
+        id: version
+        shell: zsh
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            release_version="${{ inputs.version }}"
+            release_tag="v${release_version}"
+          else
+            release_tag="${GITHUB_REF_NAME}"
+            release_version="${release_tag#v}"
+          fi
+          echo "release_version=${release_version}" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        shell: zsh
+        run: |
+          brew update
+          brew upgrade || true
+          brew install ada-url autoconf automake boost cmake create-dmg ffmpeg@6 jpeg-xl jq libavif libheif libtool openal-soft openh264 openssl opus ninja pkgconf python qtbase qtimageformats qtsvg xz
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          echo "/opt/homebrew/opt/qtbase/bin" >> "$GITHUB_PATH"
+
+      - name: Restore RNNoise cache
+        id: cache-rnnoise
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBRARIES_PATH }}/local/rnnoise
+          key: macos-arm64-rnnoise-v1
+
+      - name: Build RNNoise
+        if: steps.cache-rnnoise.outputs.cache-hit != 'true'
+        shell: zsh
+        run: |
+          mkdir -p "$LIBRARIES_PATH"
+          cd "$LIBRARIES_PATH"
+          rm -rf rnnoise
+          git clone --depth=1 https://github.com/xiph/rnnoise.git
+          cd rnnoise
+          ./autogen.sh
+          ./configure --prefix="$LIBRARIES_PATH/local/rnnoise" --disable-examples --disable-doc
+          make -j"$(sysctl -n hw.logicalcpu)"
+          make install
+
+      - name: Restore tg_owt cache
+        id: cache-tg-owt
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBRARIES_PATH }}/local/tg_owt
+          key: macos-arm64-tg-owt-v1
+
+      - name: Build tg_owt
+        if: steps.cache-tg-owt.outputs.cache-hit != 'true'
+        shell: zsh
+        run: |
+          mkdir -p "$LIBRARIES_PATH"
+          cd "$LIBRARIES_PATH"
+          rm -rf tg_owt
+          git clone --depth=1 --recursive --shallow-submodules https://github.com/desktop-app/tg_owt.git
+          cd tg_owt
+          cmake -B build . -DCMAKE_INSTALL_PREFIX="$LIBRARIES_PATH/local/tg_owt"
+          cmake --build build --parallel
+          cmake --install build
+
+      - name: Restore tde2e cache
+        id: cache-tde2e
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.LIBRARIES_PATH }}/local/tde2e
+          key: macos-arm64-tde2e-${{ env.TDE2E_REVISION }}
+
+      - name: Build tde2e
+        if: steps.cache-tde2e.outputs.cache-hit != 'true'
+        shell: zsh
+        run: |
+          mkdir -p "$LIBRARIES_PATH"
+          cd "$LIBRARIES_PATH"
+          rm -rf tde2e
+          git init tde2e
+          cd tde2e
+          git remote add origin https://github.com/tdlib/td.git
+          git fetch --depth=1 origin "$TDE2E_REVISION"
+          git reset --hard FETCH_HEAD
+          cmake -B build . -DCMAKE_INSTALL_PREFIX="$LIBRARIES_PATH/local/tde2e" -DTD_E2E_ONLY=ON
+          cmake --build build --parallel
+          cmake --install build
+
+      - name: Write DesktopPrivate headers
+        env:
+          UPDATER_PUBLIC_KEY: ${{ secrets.UPDATER_PUBLIC_KEY }}
+          UPDATER_PUBLIC_BETA_KEY: ${{ secrets.UPDATER_PUBLIC_BETA_KEY }}
+          UPDATER_PRIVATE_KEY: ${{ secrets.UPDATER_PRIVATE_KEY }}
+          UPDATER_PRIVATE_BETA_KEY: ${{ secrets.UPDATER_PRIVATE_BETA_KEY }}
+        shell: zsh
+        run: |
+          mkdir -p ../DesktopPrivate
+          cat > ../DesktopPrivate/update_public.h <<'EOF'
+          inline constexpr auto UpdatesPublicKey = R"KEY(__UPDATER_PUBLIC_KEY__)KEY";
+          inline constexpr auto UpdatesPublicBetaKey = R"KEY(__UPDATER_PUBLIC_BETA_KEY__)KEY";
+          EOF
+          cat > ../DesktopPrivate/packer_public.h <<'EOF'
+          const char *PublicKey = R"KEY(__UPDATER_PUBLIC_KEY__)KEY";
+          const char *PublicBetaKey = R"KEY(__UPDATER_PUBLIC_BETA_KEY__)KEY";
+          EOF
+          cat > ../DesktopPrivate/packer_private.h <<'EOF'
+          const char *PrivateKey = R"KEY(__UPDATER_PRIVATE_KEY__)KEY";
+          const char *PrivateBetaKey = R"KEY(__UPDATER_PRIVATE_BETA_KEY__)KEY";
+          EOF
+          cat > ../DesktopPrivate/alpha_private.h <<'EOF'
+          const char *AlphaPrivateKey = "";
+          EOF
+          python3 - <<'PY'
+from pathlib import Path
+import os
+
+public_key = os.environ["UPDATER_PUBLIC_KEY"]
+public_beta_key = os.environ.get("UPDATER_PUBLIC_BETA_KEY") or public_key
+private_key = os.environ["UPDATER_PRIVATE_KEY"]
+private_beta_key = os.environ.get("UPDATER_PRIVATE_BETA_KEY") or private_key
+
+files = [
+    ("../DesktopPrivate/update_public.h", {
+        "__UPDATER_PUBLIC_KEY__": public_key,
+        "__UPDATER_PUBLIC_BETA_KEY__": public_beta_key,
+    }),
+    ("../DesktopPrivate/packer_public.h", {
+        "__UPDATER_PUBLIC_KEY__": public_key,
+        "__UPDATER_PUBLIC_BETA_KEY__": public_beta_key,
+    }),
+    ("../DesktopPrivate/packer_private.h", {
+        "__UPDATER_PRIVATE_KEY__": private_key,
+        "__UPDATER_PRIVATE_BETA_KEY__": private_beta_key,
+    }),
+]
+
+for name, replacements in files:
+    path = Path(name)
+    data = path.read_text()
+    for key, value in replacements.items():
+        data = data.replace(key, value)
+    path.write_text(data)
+PY
+
+      - name: Set version
+        shell: zsh
+        run: Telegram/build/set_version.sh "${{ steps.version.outputs.release_version }}"
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        shell: zsh
+        run: |
+          python3 - <<'PY'
+import base64
+import os
+from pathlib import Path
+
+Path("certificate.p12").write_bytes(base64.b64decode(os.environ["APPLE_CERT_BASE64"]))
+PY
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" build.keychain
+
+      - name: Build
+        env:
+          TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
+          TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID }}
+        shell: zsh
+        run: |
+          export CMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH$(find "$LIBRARIES_PATH/local" -mindepth 1 -maxdepth 1 -type d -exec printf ':%s' {} +)"
+          cmake -B build . \
+            -G "$CMAKE_GENERATOR" \
+            -D CMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE" \
+            -D DESKTOP_APP_SPECIAL_TARGET=ON \
+            -D TDESKTOP_MAC_BUNDLE_ID="$TDESKTOP_MAC_BUNDLE_ID" \
+            -D TDESKTOP_API_ID="$TDESKTOP_API_ID" \
+            -D TDESKTOP_API_HASH="$TDESKTOP_API_HASH"
+          cmake --build build --parallel
+
+      - name: Package app
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        shell: zsh
+        run: |
+          mkdir -p dist
+          macdeployqt build/Telegram.app
+          codesign --force --deep --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" build/Telegram.app --entitlements Telegram/Telegram.entitlements
+          hdiutil create -volname "Telegram Desktop" -srcfolder build/Telegram.app -ov -format UDZO "dist/Telegram-${{ steps.version.outputs.release_version }}-arm64.dmg"
+
+      - name: Notarize
+        if: ${{ secrets.APPLE_NOTARY_KEY_ID != '' && secrets.APPLE_NOTARY_ISSUER_ID != '' && secrets.APPLE_NOTARY_API_KEY_BASE64 != '' }}
+        env:
+          APPLE_NOTARY_API_KEY_BASE64: ${{ secrets.APPLE_NOTARY_API_KEY_BASE64 }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+        shell: zsh
+        run: |
+          mkdir -p private_keys
+          python3 - <<'PY'
+import base64
+import os
+from pathlib import Path
+
+name = f"AuthKey_{os.environ['APPLE_NOTARY_KEY_ID']}.p8"
+Path("private_keys", name).write_bytes(
+    base64.b64decode(os.environ["APPLE_NOTARY_API_KEY_BASE64"])
+)
+PY
+          xcrun notarytool submit "dist/Telegram-${{ steps.version.outputs.release_version }}-arm64.dmg" \
+            --key "private_keys/AuthKey_${APPLE_NOTARY_KEY_ID}.p8" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --wait
+          xcrun stapler staple "dist/Telegram-${{ steps.version.outputs.release_version }}-arm64.dmg"
+          xcrun stapler staple build/Telegram.app
+
+      - name: Build updater package
+        id: feed
+        shell: zsh
+        run: |
+          app_version="$(awk '$1 == "AppVersion" { print $2 }' Telegram/build/version)"
+          update_file="tarmacupd${app_version}"
+          echo "app_version=${app_version}" >> "$GITHUB_OUTPUT"
+          echo "update_file=${update_file}" >> "$GITHUB_OUTPUT"
+          (
+            cd dist
+            ../build/Packer -path ../build/Telegram.app -version "$app_version" -arch arm64
+          )
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.release_tag }}
+          files: |
+            dist/Telegram-${{ steps.version.outputs.release_version }}-arm64.dmg
+            dist/${{ steps.feed.outputs.update_file }}
+
+      - name: Prepare Pages content
+        shell: zsh
+        run: |
+          mkdir -p pages
+          cat > pages/current <<EOF
+          {
+            "default": {
+              "stable": {
+                "released": ${{ steps.feed.outputs.app_version }},
+                "link": "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.release_tag }}/${{ steps.feed.outputs.update_file }}"
+              }
+            }
+          }
+          EOF
+
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages
+
+  pages:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -547,16 +547,19 @@ bool ParseCommonMap(
 	const auto platforms = document.object();
 	const auto platform = Platform::AutoUpdateKey();
 	const auto it = platforms.constFind(platform);
-	if (it == platforms.constEnd()) {
+	const auto fallback = platforms.constFind(u"default"_q);
+	if (it == platforms.constEnd() && fallback == platforms.constEnd()) {
 		LOG(("Update Error: MTP platform '%1' not found in response."
 			).arg(platform));
 		return false;
-	} else if (!(*it).isObject()) {
+	}
+	const auto source = (it != platforms.constEnd()) ? it : fallback;
+	if (!(*source).isObject()) {
 		LOG(("Update Error: MTP not an object found for platform '%1'."
-			).arg(platform));
+			).arg(source == it ? platform : u"default"_q));
 		return false;
 	}
-	const auto types = (*it).toObject();
+	const auto types = (*source).toObject();
 	const auto list = [&]() -> std::vector<QString> {
 		if (cAlphaVersion()) {
 			return { "alpha", "beta", "stable" };
@@ -654,9 +657,13 @@ HttpChecker::HttpChecker(bool testing) : Checker(testing) {
 
 void HttpChecker::start() {
 	const auto updaterVersion = Platform::AutoUpdateVersion();
-	const auto path = Local::readAutoupdatePrefix()
-		+ qstr("/current")
-		+ (updaterVersion > 1 ? QString::number(updaterVersion) : QString());
+	const auto path = UseCustomUpdateFeed
+		? (Local::readAutoupdatePrefix() + qstr("/current"))
+		: (Local::readAutoupdatePrefix()
+			+ qstr("/current")
+			+ (updaterVersion > 1
+				? QString::number(updaterVersion)
+				: QString()));
 	auto url = QUrl(path);
 	DEBUG_LOG(("Update Info: requesting update state"));
 	const auto request = QNetworkRequest(url);
@@ -766,10 +773,14 @@ std::optional<QString> HttpChecker::parseResponse(
 	if (!result) {
 		return std::nullopt;
 	}
+	const auto url = bestLink.startsWith(u"http://"_q)
+		|| bestLink.startsWith(u"https://"_q)
+		? bestLink
+		: Local::readAutoupdatePrefix() + bestLink;
 	return validateLatestUrl(
 		bestAvailableVersion,
 		bestIsAvailableAlpha,
-		Local::readAutoupdatePrefix() + bestLink);
+		url);
 }
 
 QString HttpChecker::validateLatestUrl(
@@ -1268,12 +1279,18 @@ void Updater::start(bool forceWait) {
 	}
 
 	if (sendRequest) {
+		_mtpImplementation = Implementation();
+		if (UseCustomUpdateFeed) {
+			_mtpImplementation.failed = true;
+		}
 		startImplementation(
 			&_httpImplementation,
 			std::make_unique<HttpChecker>(_testing));
-		startImplementation(
-			&_mtpImplementation,
-			std::make_unique<MtpChecker>(_session, _testing));
+		if (!UseCustomUpdateFeed) {
+			startImplementation(
+				&_mtpImplementation,
+				std::make_unique<MtpChecker>(_session, _testing));
+		}
 
 		_checking.fire({});
 	} else {

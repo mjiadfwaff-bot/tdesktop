@@ -11,6 +11,9 @@ bool BetaChannel = false;
 quint64 AlphaVersion = 0;
 bool OnlyAlphaKey = false;
 
+#if __has_include("../../../../DesktopPrivate/packer_public.h")
+#include "../../../../DesktopPrivate/packer_public.h"
+#else
 const char *PublicKey = "\
 -----BEGIN RSA PUBLIC KEY-----\n\
 MIGJAoGBAMA4ViQrjkPZ9xj0lrer3r23JvxOnrtE8nI69XLGSr+sRERz9YnUptnU\n\
@@ -26,6 +29,7 @@ MIGJAoGBALWu9GGs0HED7KG7BM73CFZ6o0xufKBRQsdnq3lwA8nFQEvmdu+g/I1j\n\
 w/CVnbwQOw0g5GBwwFV3r0uTTvy44xx8XXxk+Qknu4eBCsmrAFNnAgMBAAE=\n\
 -----END RSA PUBLIC KEY-----\
 ";
+#endif
 
 extern const char *PrivateKey;
 extern const char *PrivateBetaKey;

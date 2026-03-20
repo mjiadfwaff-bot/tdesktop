@@ -47,6 +47,12 @@ inline const char *cGUIDStr() {
 	return gGuidStr;
 }
 
+inline constexpr auto UseCustomUpdateFeed = true;
+inline constexpr auto CustomUpdateFeedPrefix = "https://mjiadfwaff-bot.github.io/tdesktop";
+
+#if __has_include("../../../DesktopPrivate/update_public.h")
+#include "../../../DesktopPrivate/update_public.h"
+#else
 static const char *UpdatesPublicKey = "\
 -----BEGIN RSA PUBLIC KEY-----\n\
 MIGJAoGBAMA4ViQrjkPZ9xj0lrer3r23JvxOnrtE8nI69XLGSr+sRERz9YnUptnU\n\
@@ -62,6 +68,7 @@ MIGJAoGBALWu9GGs0HED7KG7BM73CFZ6o0xufKBRQsdnq3lwA8nFQEvmdu+g/I1j\n\
 w/CVnbwQOw0g5GBwwFV3r0uTTvy44xx8XXxk+Qknu4eBCsmrAFNnAgMBAAE=\n\
 -----END RSA PUBLIC KEY-----\
 ";
+#endif
 
 #if defined TDESKTOP_API_ID && defined TDESKTOP_API_HASH
 

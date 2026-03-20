@@ -1090,12 +1090,14 @@ void AccountsList::rebuild() {
 
 	const auto count = int(list.size());
 
-	_reorder->addPinnedInterval(
-		premiumLimit,
-		std::max(1, count - premiumLimit));
+	if (count > premiumLimit) {
+		_reorder->addPinnedInterval(
+			premiumLimit,
+			std::max(1, count - premiumLimit));
+	}
 
 	_addAccount->toggle(
-		(count < ::Main::Domain::kPremiumMaxAccounts),
+		(count < premiumLimit),
 		anim::type::instant);
 
 	_reorder->start();
